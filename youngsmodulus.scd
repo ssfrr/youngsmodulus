@@ -7,11 +7,54 @@ SynthDef(\partialsynth, {
     var sig = SinOsc.ar(root*partial);
     var env = Env.asr(1, amp, 5).ar(2, gate);
     Out.ar(out, sig*env);
+}).add;
+
+SynthDef(\distdelay, {
+    | dist=1, mindist=1, maxdist=100, in, out=0 |
+    var sndspeed = 344;
+    // attenuate the volume
+    var mult = Clip.kr(mindist/dist);
+    Out.ar(out, DelayC.ar(In.ar(in), maxdist/sndspeed, dist/sndspeed) * mult);
 }).add
 )
 
-~frontleft = Group()
-~frontright = Group()
+o = Synth(\partialsynth, [out: ~frontleft.outbus], ~frontleft.grp)
+o.set(\gate, 0)
+
+(
+// Create groups for each speaker location. We use `grp` here instead of `group`
+// so that we can use ~frontleft.grp syntax (`group` is a method on Event).
+var setLoc = {
+    | self, loc |
+    var dist = (loc - self.loc).squared.sum.sqrt;
+    self.delaysynth.set(\dist, dist);
+};
+~frontleft = (
+    grp: Group(),
+    loc: [-4, 0, 0],
+    outbus: Bus.audio,
+    setLoc: setLoc,
+);
+~frontleft.delaysynth = Synth(\distdelay,
+    [
+        in: ~frontleft.outbus,
+        out: 0
+    ],
+    addAction: \addToTail);
+
+~frontright = (
+    grp: Group(),
+    loc: [4, 0, 0],
+    outbus: Bus.audio,
+    setLoc: setLoc,
+);
+~frontright.delaysynth = Synth(\distdelay,
+    [
+        in: ~frontright.outbus,
+        out: 1
+    ],
+    addAction: \addToTail);
+)
 
 (
 // partial build-up code borrows from Sam Pluta's DreamHouse.scd code.  This
@@ -47,26 +90,35 @@ partials = partials ++ [71*(2**3), 17*(2**5), 67*(2**4), 137*(2**3), 131*(2**4),
 partials = partials ++ [31, 29, 61, 59, 113];
 // add 119
 partials.add(119);
-//reinforce the base frequencies within the 9:7 major third of the primary band
+//reinforce the b-ase frequencies within the 9:7 major third of the primary band
 partials = partials ++ [2**8, 7*(2**5), 9*(2**5)];
 
 // make sure all the synths start at exactly the same time
 s.bind {
     // currently we're playing the same signal in the left and right speakers
-    [[~frontleft, 0], [~frontright, 1]].do {
-        | groupchan |
+    [~frontleft, ~frontright].do {
+        | speaker |
         var amp = 1/partials.size;
         partials.do {
             | partial |
             Synth(\partialsynth, [
                     partial: partial,
                     amp: amp,
-                    out: groupchan[1]],
-                groupchan[0]);
+                    out: speaker.outbus],
+                speaker.grp);
         }
     }
 }
 )
 
+s.bind {[~frontleft, ~frontright].do(_.setLoc([0, 0, 0]))}
+
+(
 // fade out the tones
-s.bind { [~frontleft, ~frontright].do(_.set(\gate, 0))}
+s.bind {
+    [~frontleft, ~frontright].do {
+        |sp|
+        sp.grp.set(\gate, 0)
+    }
+}
+)
