@@ -1,13 +1,18 @@
 s.boot
 s.quit
 
+//////////////////////////////
 // set up encoder and decoder
+/////////////////////////////
 (
 ~encoder = FoaEncoderMatrix.newOmni;
 ~decoder = FoaDecoderKernel.newCIPIC;
 ~ambiout = Bus.audio(s, 4);
 )
 
+////////////////////
+// Create SynthDefs
+///////////////////
 (
 // synthesize a single partial with a simple ASR envelope
 SynthDef(\partialsynth, {
@@ -42,6 +47,9 @@ SynthDef(\decodebinaural, {
 }).add;
 )
 
+/////////////////////////////////////////////////////////////
+// Init main Synth structure with speaker groups and spatializers
+////////////////////////////////////////////////////////////
 (
 // Create groups for each speaker location. We use `grp` here instead of `group`
 // so that we can use ~frontleft.grp syntax (`group` is a method on Event).
@@ -61,7 +69,6 @@ var setHeadLoc = {
 // we spread the speaker locations slightly past where the listener can go
 // so that we don't get weird singularities when they're right on top
 ~speakers = [[-2, -1.5, 0], [2, -1.5, 0], [-2, 1.5, 0], [2, 1.5, 0]].collect {
-//~speakers = [[0, 0, 0]].collect {
     | loc |
     var sp = (
         grp: Group(),
@@ -98,6 +105,9 @@ var setHeadLoc = {
 }, '/knob')
 )
 
+////////////////////////////////
+// SWITCH ON THE OSCILLATORS!
+///////////////////////////////
 (
 // partial build-up code borrows from Sam Pluta's DreamHouse.scd code.  This
 // duplicates the sine-wave frequencies of La Monte Young's composition playing
@@ -154,7 +164,10 @@ s.bind {
 )
 
 (
+
+////////////////////
 // fade out the tones
+///////////////////
 s.bind {
     ~speakers.do {
         |sp|
@@ -163,7 +176,9 @@ s.bind {
 }
 )
 
+///////////////////////
 // EXTRA SETUP NOTES:
+//////////////////////
 
 OSCFunc.trace(false)
 
