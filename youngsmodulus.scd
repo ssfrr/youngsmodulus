@@ -1,7 +1,15 @@
 s.boot
 s.quit
 
+// set up encoder and decoder
 (
+~encoder = FoaEncoderMatrix.newOmni;
+~decoder = FoaDecoderKernel.newCIPIC;
+~ambiout = Bus.audio(s, 4);
+)
+
+(
+// synthesize a single partial with a simple ASR envelope
 SynthDef(\partialsynth, {
     | root=7.5, partial=32, amp=1, gate=1, out=0 |
     var sig = SinOsc.ar(root*partial);
@@ -9,51 +17,85 @@ SynthDef(\partialsynth, {
     Out.ar(out, sig*env);
 }).add;
 
-SynthDef(\distdelay, {
-    | dist=1, mindist=1, maxdist=100, in, out=0 |
+// take the sound from a mono bus and apply spatialization based on distance and angle
+SynthDef(\spat, {
+    | dist=1, azimuth=0, elevation=0, mindist=1, maxdist=100, in, out=0 |
     var sndspeed = 344;
     // attenuate the volume
     var mult = Clip.kr(mindist/dist);
-    Out.ar(out, DelayC.ar(In.ar(in), maxdist/sndspeed, dist/sndspeed) * mult);
-}).add
-)
+    var maxdelay = maxdist/sndspeed;
+    // note we subtract out the 256-sample pre-delay for the HRIRs used for binaural decoding
+    var delay = Clip.kr(dist/sndspeed - (256/44100), 0, maxdelay);
+    // now the signal processing
+    var delayed = DelayC.ar(In.ar(in), maxdist/sndspeed, Lag.kr(delay, 0.5)) * mult;
+    var encoded = FoaEncode.ar(delayed, ~encoder);
+    var transformed = FoaPush.ar(encoded, pi/2, azimuth, elevation);
+    Out.ar(out, transformed);
+}).add;
 
-o = Synth(\partialsynth, [out: ~frontleft.outbus], ~frontleft.grp)
-o.set(\gate, 0)
+SynthDef(\decodebinaural, {
+    | in, out=0, headAngle=0, headTilt=0, headTumble=0 |
+    // rotate the world around the head, in the opposite direction.
+    // TODO: I haven't put much thought into the rotation order here, so it's probably wrong
+    var rotated = FoaRTT.ar(In.ar(in, 4), headAngle.neg, headTilt.neg, headTumble.neg);
+    Out.ar(out, FoaDecode.ar(rotated, ~decoder));
+}).add;
+)
 
 (
 // Create groups for each speaker location. We use `grp` here instead of `group`
 // so that we can use ~frontleft.grp syntax (`group` is a method on Event).
-var setLoc = {
+// ATK uses the convention that +X is forward, +Y is left, and +Z is up (right-handed)
+var setHeadLoc = {
     | self, loc |
-    var dist = (loc - self.loc).squared.sum.sqrt;
-    self.delaysynth.set(\dist, dist);
+    var diff = self.loc - loc;
+    var dist = diff.squared.sum.sqrt;
+    var ang = diff[1].atan2(diff[0]);
+    //("diff: " ++ diff).postln;
+    //("dist: " ++ dist).postln;
+    //("azimuth: " ++ ang).postln;
+    self.delaysynth.set(\dist, dist, \azimuth, ang);
 };
-~frontleft = (
-    grp: Group(),
-    loc: [-4, 0, 0],
-    outbus: Bus.audio,
-    setLoc: setLoc,
-);
-~frontleft.delaysynth = Synth(\distdelay,
-    [
-        in: ~frontleft.outbus,
-        out: 0
-    ],
-    addAction: \addToTail);
 
-~frontright = (
-    grp: Group(),
-    loc: [4, 0, 0],
-    outbus: Bus.audio,
-    setLoc: setLoc,
-);
-~frontright.delaysynth = Synth(\distdelay,
-    [
-        in: ~frontright.outbus,
-        out: 1
-    ],
-    addAction: \addToTail);
+// use an Event as a bag of attributes for each speaker location
+// we spread the speaker locations slightly past where the listener can go
+// so that we don't get weird singularities when they're right on top
+~speakers = [[-2, -1.5, 0], [2, -1.5, 0], [-2, 1.5, 0], [2, 1.5, 0]].collect {
+//~speakers = [[0, 0, 0]].collect {
+    | loc |
+    var sp = (
+        grp: Group(),
+        loc: loc*1.01,
+        outbus: Bus.audio,
+        setHeadLoc: setHeadLoc,
+    );
+    sp.delaysynth = Synth(\spat, [in: sp.outbus, out: ~ambiout], addAction: \addToTail);
+
+    sp
+};
+
+~decodesynth = Synth(\decodebinaural, [in: ~ambiout, out: 0], addAction: \addToTail);
+
+~xyResp.free;
+~xyResp = OSCFunc({
+    | msg |
+    // msg.postln;
+    // in the ambisonic coordinate system +X is forward, +Y is left, +Z is up.
+    // our room is 4mx3m with (0, 0) in the center
+    // so we need to adapt the coords coming over OSC, which have 0, 0 in the
+    // bottom-left, +Y forward, +X right
+    ~speakers.do {
+        | sp |
+        sp.setHeadLoc([(msg[2]-0.5)*4, (0.5-msg[1])*3, 0]);
+    }
+}, '/xy');
+~knobResp.free;
+~knobResp = OSCFunc({
+    | msg |
+    // msg.postln;
+    // positive angles move to the left, so we negate the knob
+    ~decodesynth.set(\headAngle, msg[1].neg*pi);
+}, '/knob')
 )
 
 (
@@ -95,10 +137,10 @@ partials = partials ++ [2**8, 7*(2**5), 9*(2**5)];
 
 // make sure all the synths start at exactly the same time
 s.bind {
-    // currently we're playing the same signal in the left and right speakers
-    [~frontleft, ~frontright].do {
+    // currently we're playing the same signal all the (virtual) speakers
+    ~speakers.do {
         | speaker |
-        var amp = 1/partials.size;
+        var amp = 1/partials.size/~speakers.size;
         partials.do {
             | partial |
             Synth(\partialsynth, [
@@ -111,14 +153,27 @@ s.bind {
 }
 )
 
-s.bind {[~frontleft, ~frontright].do(_.setLoc([0, 0, 0]))}
-
 (
 // fade out the tones
 s.bind {
-    [~frontleft, ~frontright].do {
+    ~speakers.do {
         |sp|
         sp.grp.set(\gate, 0)
     }
 }
+)
+
+// EXTRA SETUP NOTES:
+
+OSCFunc.trace(false)
+
+// download atk-sounds and atk-kernels from:
+// https://github.com/ambisonictoolkit/atk-sounds
+// https://github.com/ambisonictoolkit/atk-kernels
+// run the following block and unzip into the directory that pops up. The contents
+// of the repos should be in "sounds" and "kernels" subfolders respectively
+// also make sure to install the MathLib quark
+(
+Atk.createUserSupportDir;
+Atk.openUserSupportDir;
 )
