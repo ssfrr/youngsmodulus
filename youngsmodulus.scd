@@ -4,11 +4,11 @@ s.quit
 //////////////////////////////
 // set up encoder and decoder
 /////////////////////////////
-(
 ~encoder = FoaEncoderMatrix.newOmni;
-~decoder = FoaDecoderKernel.newCIPIC;
 ~ambiout = Bus.audio(s, 4);
-)
+// choose your decoder
+~decoder = FoaDecoderKernel.newCIPIC; // for binaural
+~decoder = FoaDecoderMatrix.newStereo;
 
 ////////////////////
 // Create SynthDefs
@@ -44,6 +44,11 @@ SynthDef(\decodebinaural, {
     // TODO: I haven't put much thought into the rotation order here, so it's probably wrong
     var rotated = FoaRTT.ar(In.ar(in, 4), headAngle.neg, headTilt.neg, headTumble.neg);
     Out.ar(out, FoaDecode.ar(rotated, ~decoder));
+}).add;
+
+SynthDef(\loopbuf, {
+    | bufnum, loopstart, loopend, out |
+    Out.ar(out, LoopBuf.ar(1, bufnum, startLoop:loopstart, endLoop: loopend));
 }).add;
 )
 
@@ -145,26 +150,32 @@ partials.add(119);
 //reinforce the b-ase frequencies within the 9:7 major third of the primary band
 partials = partials ++ [2**8, 7*(2**5), 9*(2**5)];
 
-// make sure all the synths start at exactly the same time
-s.bind {
-    // currently we're playing the same signal all the (virtual) speakers
-    ~speakers.do {
-        | speaker |
-        var amp = 1/partials.size/~speakers.size;
-        partials.do {
-            | partial |
-            Synth(\partialsynth, [
-                    partial: partial,
-                    amp: amp,
-                    out: speaker.outbus],
-                speaker.grp);
-        }
-    }
+~playpartials.value(partials)
+)
+
+// This is useful for quickly playing a set of partials through all speakers
+(
+~playpartials = {
+	| partials |
+	s.bind {
+	~speakers.do {
+		| speaker |
+			partials.do {
+				| partial |
+				Synth(\partialsynth, [
+					partial: partial,
+					amp: 1/(~speakers.size * partials.size),
+					out: speaker.outbus],
+				speaker.grp);
+			}
+		}
+	}
 }
 )
 
-(
+~playpartials.value([1, 1, 2, 5, 14, 42, 132, 429, 1430, 4862, 16796])
 
+(
 ////////////////////
 // fade out the tones
 ///////////////////
@@ -172,6 +183,42 @@ s.bind {
     ~speakers.do {
         |sp|
         sp.grp.set(\gate, 0)
+    }
+}
+)
+
+//////////////////
+// Set up an audio buffer
+/////////////////
+b = Buffer.read(s, "/Users/srussell/Desktop/IRCAM Workshop/WorkshopSounds/cello-VC_mV_cres3_4s_p-f_A2.aiff");
+
+////////////////////
+// Play the buffer through all 4 chanels
+///////////////////
+(
+s.bind {
+    // currently we're playing the same signal all the (virtual) speakers
+    ~speakers.do {
+        | speaker |
+        Synth(\loopbuf, [
+            bufnum: b,
+            loopstart: s.sampleRate*2.0,
+            loopend: s.sampleRate*2.400005,
+            out: speaker.outbus],
+        speaker.grp);
+    }
+}
+)
+
+(
+
+////////////////////
+// kill the loops
+///////////////////
+s.bind {
+    ~speakers.do {
+        |sp|
+        sp.grp.freeAll;
     }
 }
 )
