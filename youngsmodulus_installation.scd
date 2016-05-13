@@ -2,7 +2,9 @@ s.options.device = "8M"
 s.options.numOutputBusChannels = 10
 s.options.numOutputBusChannels = 2
 s.boot
-
+// this is a list of channels for the speakers. There's some weird quirk of the 8M
+// that is mapping the channels weirdly here
+~speakerchannels = [0, 1, 4, 5, 6];
 s.quit
 
 
@@ -31,6 +33,16 @@ SynthDef(\gain, {
     Out.ar(out, sig);
 }).add;
 
+// splits the input between all the busses listed in ~speakerchannels
+SynthDef(\splitter, {
+    | in |
+    var insig = In.ar(in);
+    ~speakerchannels.do {
+        | chan |
+        Out.ar(chan, insig);
+    }
+}).add;
+
 // buffer player, currently unused...
 SynthDef(\loopbuf, {
     | bufnum, loopstart, loopend, out |
@@ -46,16 +58,20 @@ SynthDef(\loopbuf, {
 (
 ~rootfreq = 30;
 
+// audio sent to this bus will get split to all speakers
+~splitbus = Bus.audio();
+
 // Create groups for each speaker location. We use `grp` here instead of `group`
 // so that we can use ~frontleft.grp syntax (`group` is a method on Event).
 
 // use an Event as a bag of attributes for each speaker location
-// this is a list of channels for the speakers. There's some weird quirk of the 8M
-// that is mapping the channels weirdly here
-~speakers = [0, 1, 4, 5, 6, 7, 8, 9].collect {
-//~speakers = [0, 1].collect {
+
+~speakers = (~speakerchannels ++ ~splitbus).collect {
     | out, spidx |
     var gainbus = Bus.audio();
+    // the OSC name should be the speaker index for most, or "all" if it's the split bus.
+    // this is sort of a hack, this should probably be refactored
+    var speakerosc = if(out == ~splitbus, "all", spidx);
     var speaker = (
         grp: Group(),
         gainbus: gainbus,
@@ -82,12 +98,12 @@ SynthDef(\loopbuf, {
                         amp: amp,
                         out: sp.gainbus
                 ], sp.grp), amp];
-                ~ipadOSC.sendMsg("/speaker/"++spidx++"/led/"++partial, 1);
+                ~ipadOSC.sendMsg("/speaker/"++speakerosc++"/led/"++partial, 1);
             });
             if((amp <= zerothresh && sp.partials[idx].notNil), {
                 sp.partials[idx][0].set(\amp, 0);
                 sp.partials[idx] = nil;
-                ~ipadOSC.sendMsg("/speaker/"++spidx++"/led/"++partial, 0);
+                ~ipadOSC.sendMsg("/speaker/"++speakerosc++"/led/"++partial, 0);
             });
         }
     );
@@ -95,7 +111,7 @@ SynthDef(\loopbuf, {
     (1..128).do {
         | harmonic |
         var maxvol = if(harmonic == 1, 1, 0.1);
-        var path = ("/speaker/" ++ spidx ++ "/harm/" ++ harmonic).asSymbol;
+        var path = ("/speaker/" ++ speakerosc ++ "/harm/" ++ harmonic).asSymbol;
         OSCdef.newMatching(path,
             {
                 | msg |
@@ -107,6 +123,7 @@ SynthDef(\loopbuf, {
     speaker;
 };
 
+Synth(\splitter, [in: ~splitbus], addAction:\addToTail);
 OSCdef(\coarse,
     {
         | msg |
