@@ -27,7 +27,7 @@ SynthDef(\partialsynth, {
 SynthDef(\gain, {
     | amp=1, master=1, gate=1, in, out=0, trigID=0 |
     var sig = In.ar(in) * Lag.kr(amp, 10) * master * Env.asr(0.1, 1, 0.1).ar(2, gate);
-    SendTrig.kr(Impulse.kr(20), trigID, PeakFollower.kr(sig, 0.999));
+    SendTrig.kr(Impulse.kr(20), trigID, PeakFollower.kr(sig, 0.99));
     Out.ar(out, sig);
 }).add;
 
@@ -38,15 +38,13 @@ SynthDef(\loopbuf, {
 }).add;
 )
 
-x = Synth(\partialsynth)
-x.set(\amp, 0)
+~ipadOSC = NetAddr.new("18.85.27.113", 9000);
 
 /////////////////////////////////////////////////////////////
 // Init main Synth structure with speaker groups and spatializers
 ////////////////////////////////////////////////////////////
 (
 ~rootfreq = 30;
-~ipadOSC = NetAddr.new("18.85.27.113", 9000);
 
 // Create groups for each speaker location. We use `grp` here instead of `group`
 // so that we can use ~frontleft.grp syntax (`group` is a method on Event).
@@ -54,14 +52,14 @@ x.set(\amp, 0)
 // use an Event as a bag of attributes for each speaker location
 // this is a list of channels for the speakers. There's some weird quirk of the 8M
 // that is mapping the channels weirdly here
-// ~speakers = [0, 1, 4, 5, 6, 7, 8, 9].collect {
-~speakers = [0, 1].collect {
+~speakers = [0, 1, 4, 5, 6, 7, 8, 9].collect {
+//~speakers = [0, 1].collect {
     | out, spidx |
     var gainbus = Bus.audio();
     var speaker = (
         grp: Group(),
         gainbus: gainbus,
-        gainsynth: Synth(\gain, [in: gainbus, out: out, trigID: out], addAction:\addToTail),
+        gainsynth: Synth(\gain, [in: gainbus, out: out, trigID: spidx], addAction:\addToTail),
         outbus: out,
         partials: nil!128,
         setgain: { | sp |
@@ -93,14 +91,15 @@ x.set(\amp, 0)
             });
         }
     );
-    // set up the harmonic OSC handlers
+    // set up the harmonic OSC handlers. To support the '*' page we need to use newMatching
     (1..128).do {
         | harmonic |
+        var maxvol = if(harmonic == 1, 1, 0.1);
         var path = ("/speaker/" ++ spidx ++ "/harm/" ++ harmonic).asSymbol;
-        OSCdef(path,
+        OSCdef.newMatching(path,
             {
                 | msg |
-                var explevel = msg[1].linexp(0, 1, 0.001, 0.3);
+                var explevel = msg[1].linexp(0, 1, 0.001, maxvol);
                 speaker.setpartial(harmonic, explevel);
         }, path);
     };
@@ -159,7 +158,7 @@ OSCdef(\master,
         | msg |
         ~speakers.do {
             |sp|
-			var mastergain = if(msg[1] == 0, 0, msg[1].linexp(0, 1, 0.002, 1));
+			var mastergain = if(msg[1] == 0, 0, msg[1].linexp(0, 1, 0.00001, 1));
 			sp.gainsynth.set(\master, mastergain);
         }
     },
@@ -171,18 +170,13 @@ OSCdef(\tr,
     {
         | msg |
         var speaker = msg[2];
-        var amp = msg[3].explin(0.01, 1, 0, 1);
+        var amp = msg[3].explin(0.00001, 1, 0, 1);
         (~ipadOSC.notNil).if {
             ~ipadOSC.sendMsg("/speaker/"++speaker++"/level", amp);
         }
     },
     '/tr';)
 )
-
-~speakers[0].meterbus.get
-0.90.explin(0.01, 1, 0, 1)
-
-~ipadOSC.sendMsg("/speaker/"++0++"/led/"++2, 1);
 
 ////////////////////////////////
 // SWITCH ON THE OSCILLATORS!
@@ -250,31 +244,45 @@ partials = partials ++ [2**8, 7*(2**5), 9*(2**5)];
 // this will play back a set of partials that have been dumped from the iOS app.
 // It expects an array where each element has the partials for one speaker
 // the partials are in an array where each element is a [harmonic, amplitude] pair
-/*(
+(
 ~loadpartials = {
     | speakers |
     s.bind {
         speakers.do {
-            | partials, spidx |
-            partials.do {
+            | speakerpartials, idx |
+            speakerpartials.do {
                 | partial |
-                var partidx = partial-1;
-                if(~speakers[spidx].partials[partidx].isNil,
-                    {
-                        ~speakers[spidx].partials[partidx] =
-                    }, {
-                });
+                ~speakers[idx].setpartial(partial[0], partial[1]);
             }
         }
     }
 }
-)*/
+)
 
 // catalan numbers up as far as we can go without aliasing
 ~playpartials.value([1, 1, 2, 5, 14, 42, 132, 429, 1430])
 ~playpartials.value([ 4, 14, 15, 68, 8, 16, 20, 24, 67 ])
 ~playpartials.value([8]);
-7.5*1430
+
+~loadpartials.value(
+    [
+        [ [4, 0.1], [14, 0.1], [15, 0.1], [68, 0.1] ],
+        [ [8, 0.1], [16, 0.1], [20, 0.1], [24, 0.1], [67, 0.1] ]
+])
+
+// Dom7 study
+(
+~loadpartials.value([
+[ [ 1, 0.24582440689202 ], [ 2, 0.035622512957046 ], [ 5, 0.01202266203467 ] ],
+[ [ 14, 0.046415845867229 ], [ 32, 0.0052749976267871 ], [ 39, 0.0044366875458888 ], [ 41, 0.008733261694334 ], [ 48, 0.011547819846895 ], [ 64, 0.0021544328173618 ] ],
+[ [ 7, 0.021544378440063 ], [ 11, 0.012328464933304 ], [ 12, 0.0065793339704447 ], [ 40, 0.011450477178459 ], [ 47, 0.0086596432336007 ], [ 49, 0.0031622776601684 ], [ 63, 0.0073564226792138 ], [ 65, 0.0073564236888444 ] ],
+[ [ 14, 0.021544366612654 ], [ 32, 0.0021544345914703 ], [ 39, 0.0025808615716719 ], [ 41, 0.0025808615716719 ], [ 48, 0.0074989420933246 ], [ 64, 0.0063095736179931 ] ],
+[ [ 7, 0.01333521798201 ], [ 11, 0.010000005489792 ], [ 12, 0.011103368168916 ], [ 40, 0.0022539341048964 ], [ 47, 0.0031622776601684 ], [ 49, 0.0036517412725484 ], [ 63, 0.0063095736179931 ], [ 65, 0.0054116954635251 ] ],
+[  ],
+[  ],
+[  ],
+])
+)
 
 // resonances measures using the 8th harmonic
 // 6.11, 11.50Hz, 25.5, 63.15
