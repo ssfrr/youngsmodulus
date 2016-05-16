@@ -107,12 +107,12 @@ SynthDef(\loopbuf, {
             });
         }
     );
-    // set up the harmonic OSC handlers. To support the '*' page we need to use newMatching
+    // set up the harmonic OSC handlers
     (1..128).do {
         | harmonic |
         var maxvol = if(harmonic == 1, 1, 0.1);
         var path = ("/speaker/" ++ speakerosc ++ "/harm/" ++ harmonic).asSymbol;
-        OSCdef.newMatching(path,
+        OSCdef(path,
             {
                 | msg |
                 var explevel = msg[1].linexp(0, 1, 0.001, maxvol);
@@ -267,9 +267,13 @@ partials = partials ++ [2**8, 7*(2**5), 9*(2**5)];
     s.bind {
         speakers.do {
             | speakerpartials, idx |
+            var speakerosc = if(idx == speakers.size, "all", idx);
             speakerpartials.do {
                 | partial |
+                // NOTE: this doesn't recover the amplitudes on the subwoofer channel properly
+                var faderamp = partial[1].explin(0.001, 0.1, 0, 1);
                 ~speakers[idx].setpartial(partial[0], partial[1]);
+                ~ipadOSC.sendMsg("/speaker/"++speakerosc++"/harm/"++partial[0], faderamp);
             }
         }
     }
@@ -300,11 +304,6 @@ partials = partials ++ [2**8, 7*(2**5), 9*(2**5)];
 [  ],
 ])
 )
-
-// resonances measures using the 8th harmonic
-// 6.11, 11.50Hz, 25.5, 63.15
-
-// using 4th harmonic - 31Hz seems strong
 
 // Some good harmonies - strong major triad, good shimmer (but not too dramatic), enough
 // weird to be interesting. 67 gives some shimmer against 68
